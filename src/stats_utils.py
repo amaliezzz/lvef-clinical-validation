@@ -1,6 +1,8 @@
 import numpy as np
+import pandas as pd
 from sklearn.metrics import roc_auc_score
 from scipy.stats import norm
+from sklearn.metrics import confusion_matrix
 
 def bootstrap_auc_ci(y_true, y_score, n_boot=2000, seed=42):
     """
@@ -98,30 +100,80 @@ from sklearn.metrics import cohen_kappa_score
 
 def bootstrap_kappa_diff(y_true, pred_a, pred_b, n_boot=2000, seed=42):
     """
-    Paired bootstrap on the difference in Cohen's Kappa between two
-    classifiers (pred_b - pred_a), preserving correlation by resampling
-    the same indices for both.
+    Paired bootstrap for the difference in Cohen's Kappa
+    (pred_b - pred_a).
 
-    Returns
-    diffs : array of bootstrapped differences (kappa_b - kappa_a)
-    ci : tuple (lower, upper) — 95% confidence interval
-    p_value : one-tailed p-value (H1: kappa_b > kappa_a)
+    Returns:
+        diffs: bootstrap differences
+        ci: 95% percentile confidence interval
+        n_valid: number of valid bootstrap resamples
     """
     rng = np.random.default_rng(seed)
+
     n = len(y_true)
     y_true = np.asarray(y_true)
     pred_a = np.asarray(pred_a)
     pred_b = np.asarray(pred_b)
 
     diffs = []
+
     for _ in range(n_boot):
         idx = rng.integers(0, n, n)
+
         k_a = cohen_kappa_score(y_true[idx], pred_a[idx])
         k_b = cohen_kappa_score(y_true[idx], pred_b[idx])
-        diffs.append(k_b - k_a)
 
-    diffs = np.array(diffs)
+        diff = k_b - k_a
+
+        if np.isfinite(diff):
+            diffs.append(diff)
+
+    diffs = np.asarray(diffs)
+
+    if len(diffs) == 0:
+        raise ValueError("No valid bootstrap resamples were obtained.")
+
     ci = np.percentile(diffs, [2.5, 97.5])
-    p_value = (diffs <= 0).mean()
 
-    return diffs, ci, p_value
+    return diffs, ci, len(diffs)
+
+def classification_metrics_by_class(y_true, y_pred, labels):
+    """
+    Compute one-vs-rest classification metrics for each class.
+
+    Returns a DataFrame with sensitivity, specificity,
+    precision, F1-score, and support.
+    """
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    total = cm.sum()
+
+    rows = []
+
+    for i, label in enumerate(labels):
+        tp = cm[i, i]
+        fn = cm[i, :].sum() - tp
+        fp = cm[:, i].sum() - tp
+        tn = total - tp - fn - fp
+
+        support = tp + fn
+
+        sensitivity = tp / support if support > 0 else np.nan
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else np.nan
+        precision = tp / (tp + fp) if (tp + fp) > 0 else np.nan
+
+        f1_denominator = 2 * tp + fp + fn
+        f1 = (
+            2 * tp / f1_denominator
+            if f1_denominator > 0 else np.nan
+        )
+
+        rows.append({
+            'Category': label,
+            'Sensitivity': sensitivity,
+            'Specificity': specificity,
+            'Precision': precision,
+            'F1-score': f1,
+            'Support': support
+        })
+
+    return pd.DataFrame(rows)
